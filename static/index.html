@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>OZON Oskemen</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <header class="topbar">
+        <button id="backBtn" class="icon-btn">Назад</button>
+        <div class="brand">
+          <img id="brandLogo" class="brand-logo" src="" alt="logo" />
+          <div id="brandName" class="brand-name">OZON Oskemen</div>
+        </div>
+        <button id="moreBtn" class="icon-btn icon-btn-ghost">⋯</button>
+      </header>
+
+      <main id="view" class="view"></main>
+
+      <nav class="bottom-nav">
+        <button class="tab-btn active" data-tab="home">Главная</button>
+        <button class="tab-btn" data-tab="favorites">Избранное</button>
+        <button class="tab-btn" data-tab="cart">Корзина</button>
+        <button class="tab-btn" data-tab="profile">Профиль</button>
+      </nav>
+    </div>
+
+    <div id="overlayRoot"></div>
+    <div id="toast" class="toast"></div>
+
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
+
