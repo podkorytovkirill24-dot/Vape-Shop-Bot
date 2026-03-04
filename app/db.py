@@ -24,6 +24,7 @@ class Database:
         "delivery_fee",
         "delivery_note",
         "support_contact",
+        "store_rules",
     }
     ALLOWED_ORDER_STATUSES = {"new", "confirmed", "delivering", "done", "cancelled"}
 
@@ -59,6 +60,7 @@ class Database:
             stock INTEGER NOT NULL DEFAULT 0 CHECK (stock >= 0),
             category TEXT NOT NULL DEFAULT '',
             is_active INTEGER NOT NULL DEFAULT 1,
+            is_deleted INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -118,9 +120,20 @@ class Database:
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS promotions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         """
         with self._lock, self._connect() as conn:
             conn.executescript(schema)
+            product_columns = {row["name"] for row in conn.execute("PRAGMA table_info(products);").fetchall()}
+            if "is_deleted" not in product_columns:
+                conn.execute("ALTER TABLE products ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0")
             for key, value in self._defaults.items():
                 conn.execute(
                     "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
@@ -187,10 +200,54 @@ class Database:
             conn.commit()
         return self.get_settings()
 
-    def list_products(self, *, include_inactive: bool = False) -> list[dict[str, Any]]:
+    def list_promotions(self, *, include_inactive: bool = False) -> list[dict[str, Any]]:
         where = "" if include_inactive else "WHERE is_active = 1"
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, text, is_active, created_at, updated_at
+                FROM promotions
+                {where}
+                ORDER BY id DESC
+                """
+            ).fetchall()
+        return [_row_to_dict(row) for row in rows]
+
+    def create_promotion(self, text: str) -> dict[str, Any]:
+        clean = text.strip()
+        if not clean:
+            raise ValueError("Promotion text is empty.")
+        stamp = now_iso()
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO promotions (text, is_active, created_at, updated_at)
+                VALUES (?, 1, ?, ?)
+                """,
+                (clean, stamp, stamp),
+            )
+            promo_id = int(cursor.lastrowid)
+            row = conn.execute("SELECT * FROM promotions WHERE id = ?", (promo_id,)).fetchone()
+            conn.commit()
+        if row is None:
+            raise RuntimeError("Could not create promotion.")
+        return _row_to_dict(row)
+
+    def delete_promotion(self, promotion_id: int) -> bool:
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute("DELETE FROM promotions WHERE id = ?", (promotion_id,))
+            conn.commit()
+        return cursor.rowcount > 0
+
+    def list_products(self, *, include_inactive: bool = False, include_deleted: bool = False) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        if not include_inactive:
+            clauses.append("is_active = 1")
+        if not include_deleted:
+            clauses.append("is_deleted = 0")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         query = f"""
-            SELECT id, name, description, price_kt, image_url, stock, category, is_active, created_at, updated_at
+            SELECT id, name, description, price_kt, image_url, stock, category, is_active, is_deleted, created_at, updated_at
             FROM products
             {where}
             ORDER BY id DESC
@@ -199,15 +256,25 @@ class Database:
             rows = conn.execute(query).fetchall()
         return [_row_to_dict(row) for row in rows]
 
-    def get_product(self, product_id: int, *, include_inactive: bool = False) -> dict[str, Any] | None:
-        where = "" if include_inactive else "AND is_active = 1"
+    def get_product(
+        self,
+        product_id: int,
+        *,
+        include_inactive: bool = False,
+        include_deleted: bool = False,
+    ) -> dict[str, Any] | None:
+        clauses = ["id = ?"]
+        if not include_inactive:
+            clauses.append("is_active = 1")
+        if not include_deleted:
+            clauses.append("is_deleted = 0")
+        where = " AND ".join(clauses)
         with self._lock, self._connect() as conn:
             row = conn.execute(
-                f"""
-                SELECT id, name, description, price_kt, image_url, stock, category, is_active, created_at, updated_at
+                """
+                SELECT id, name, description, price_kt, image_url, stock, category, is_active, is_deleted, created_at, updated_at
                 FROM products
-                WHERE id = ? {where}
-                """,
+                WHERE """ + where,
                 (product_id,),
             ).fetchone()
         return _row_to_dict(row) if row else None
@@ -286,6 +353,15 @@ class Database:
             conn.commit()
         return cursor.rowcount > 0
 
+    def delete_product(self, product_id: int) -> bool:
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE products SET is_deleted = 1, is_active = 0, updated_at = ? WHERE id = ?",
+                (now_iso(), product_id),
+            )
+            conn.commit()
+        return cursor.rowcount > 0
+
     def list_favorite_ids(self, user_id: int) -> list[int]:
         with self._lock, self._connect() as conn:
             rows = conn.execute(
@@ -330,7 +406,7 @@ class Database:
                     (c.quantity * p.price_kt) AS line_total
                 FROM cart_items c
                 JOIN products p ON p.id = c.product_id
-                WHERE c.user_id = ? AND p.is_active = 1
+                WHERE c.user_id = ? AND p.is_active = 1 AND p.is_deleted = 0
                 ORDER BY c.updated_at DESC
                 """,
                 (user_id,),
@@ -399,10 +475,10 @@ class Database:
             # Re-check stock in transaction window.
             for item in cart_items:
                 row = conn.execute(
-                    "SELECT stock, is_active FROM products WHERE id = ?",
+                    "SELECT stock, is_active, is_deleted FROM products WHERE id = ?",
                     (item["product_id"],),
                 ).fetchone()
-                if row is None or int(row["is_active"]) != 1:
+                if row is None or int(row["is_active"]) != 1 or int(row["is_deleted"]) != 0:
                     raise ValueError("One of products is unavailable now.")
                 if int(item["quantity"]) > int(row["stock"]):
                     raise ValueError(f"Not enough stock for: {item['name']}")
@@ -528,6 +604,28 @@ class Database:
                 order_dict["items"] = [_row_to_dict(item_row) for item_row in item_rows]
                 orders.append(order_dict)
         return orders
+
+    def delete_order(self, order_id: int) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            order_row = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+            if order_row is None:
+                return None
+            item_rows = conn.execute(
+                """
+                SELECT product_id, product_name, unit_price, quantity, line_total
+                FROM order_items
+                WHERE order_id = ?
+                ORDER BY id ASC
+                """,
+                (order_id,),
+            ).fetchall()
+            cursor = conn.execute("DELETE FROM orders WHERE id = ?", (order_id,))
+            conn.commit()
+        if cursor.rowcount <= 0:
+            return None
+        deleted = _row_to_dict(order_row)
+        deleted["items"] = [_row_to_dict(item_row) for item_row in item_rows]
+        return deleted
 
     def update_order_status(self, order_id: int, status: str) -> dict[str, Any] | None:
         normalized = status.strip().lower()

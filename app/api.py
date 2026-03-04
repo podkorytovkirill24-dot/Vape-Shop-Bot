@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -13,6 +15,11 @@ from app.config import Config
 from app.db import Database
 
 logger = logging.getLogger(__name__)
+
+KZ_TIMEZONE = ZoneInfo("Asia/Almaty")
+SHOP_OPEN_HOUR = 14
+SHOP_CLOSE_HOUR = 22
+DEFAULT_STORE_RULES = "Работа с 14:00 до 22:00\nВкусы,позвонят спросите"
 
 
 @dataclass
@@ -43,7 +50,7 @@ class ProductUpsertIn(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     description: str = Field(default="", max_length=2_000)
     price_kt: int = Field(ge=0, le=100_000_000)
-    image_url: str = Field(default="", max_length=1_000)
+    image_url: str = Field(default="", max_length=8_000_000)
     stock: int = Field(default=0, ge=0, le=100_000)
     category: str = Field(default="", max_length=100)
     is_active: int | None = Field(default=None)
@@ -57,6 +64,11 @@ class StoreSettingsIn(BaseModel):
     delivery_fee: int | None = Field(default=None, ge=0, le=10_000_000)
     delivery_note: str | None = Field(default=None, max_length=300)
     support_contact: str | None = Field(default=None, max_length=200)
+    store_rules: str | None = Field(default=None, max_length=2_000)
+
+
+class PromotionCreateIn(BaseModel):
+    text: str = Field(min_length=1, max_length=300)
 
 
 class LanguageIn(BaseModel):
@@ -65,6 +77,28 @@ class LanguageIn(BaseModel):
 
 class OrderStatusUpdateIn(BaseModel):
     status: str = Field(min_length=2, max_length=20)
+
+
+def _shop_status(now: datetime | None = None) -> dict[str, Any]:
+    current = now.astimezone(KZ_TIMEZONE) if now else datetime.now(KZ_TIMEZONE)
+    minutes_now = current.hour * 60 + current.minute
+    open_minutes = SHOP_OPEN_HOUR * 60
+    close_minutes = SHOP_CLOSE_HOUR * 60
+    is_open = open_minutes <= minutes_now < close_minutes
+    if is_open:
+        message = ""
+    elif minutes_now < open_minutes:
+        message = "Магазин еще не работает. Работаем с 14:00."
+    else:
+        message = "Магазин уже закрыт. Работаем с 14:00 до 22:00."
+    return {
+        "is_open": is_open,
+        "message": message,
+        "opens_at": "14:00",
+        "closes_at": "22:00",
+        "timezone": "Asia/Almaty",
+        "local_time": current.strftime("%H:%M"),
+    }
 
 
 def _safe_store_settings(raw: dict[str, str], config: Config) -> dict[str, Any]:
@@ -79,6 +113,7 @@ def _safe_store_settings(raw: dict[str, str], config: Config) -> dict[str, Any]:
             "зависит от количества заказов и может длиться не более 5 часов",
         ),
         "support_contact": raw.get("support_contact", "@support"),
+        "store_rules": raw.get("store_rules", DEFAULT_STORE_RULES),
     }
 
 
@@ -94,10 +129,21 @@ def _cart_summary(items: list[dict[str, Any]], *, delivery_fee: int) -> dict[str
     }
 
 
-def _order_message(order: dict[str, Any], settings: dict[str, Any]) -> str:
+def _order_message(
+    order: dict[str, Any],
+    settings: dict[str, Any],
+    *,
+    tg_user_id: int,
+    tg_username: str | None,
+) -> str:
+    telegram_user = f"@{tg_username}" if tg_username else "(no username)"
+    telegram_link = f"https://t.me/{tg_username}" if tg_username else ""
     lines = [
         f"Новый заказ #{order['id']}",
         "",
+        f"Telegram: {telegram_user}",
+        f"Telegram ID: {tg_user_id}",
+        f"Telegram link: {telegram_link}" if telegram_link else "Telegram link: not available",
         f"Имя: {order['full_name']}",
         f"Телефон: {order['phone']}",
         f"Адрес: {order['street']}, дом {order['house']}",
@@ -142,6 +188,69 @@ def _order_destination_ids(raw_group_id: int | None) -> list[int]:
         if normalized not in candidates:
             candidates.append(normalized)
     return candidates
+
+
+async def _notify_orders_group(
+    *,
+    bot: Bot,
+    config: Config,
+    message_text: str,
+    event_name: str,
+    event_id: int,
+) -> None:
+    if not config.has_order_destination:
+        return
+
+    sent = False
+    for chat_id in _order_destination_ids(config.orders_group_id):
+        try:
+            await bot.send_message(chat_id, message_text)
+            sent = True
+            if chat_id != config.orders_group_id:
+                logger.warning(
+                    "%s #%s sent to fallback chat_id=%s. Update ORDERS_GROUP_ID to this value.",
+                    event_name,
+                    event_id,
+                    chat_id,
+                )
+            break
+        except Exception:
+            logger.warning(
+                "Failed to send %s #%s to chat_id=%s.",
+                event_name,
+                event_id,
+                chat_id,
+                exc_info=True,
+            )
+    if not sent:
+        logger.error(
+            "%s #%s happened, but notification was not delivered. ORDERS_GROUP_ID=%s",
+            event_name,
+            event_id,
+            config.orders_group_id,
+        )
+
+
+def _deleted_order_message(
+    *,
+    order: dict[str, Any],
+    settings: dict[str, Any],
+    admin: UserContext,
+) -> str:
+    admin_name = f"@{admin.username}" if admin.username else admin.first_name
+    lines = [
+        f"Админ удалил заказ #{order['id']}",
+        f"Админ: {admin_name} (ID {admin.tg_user_id})",
+        f"Клиент: {order['full_name']}",
+        f"Телефон: {order['phone']}",
+        f"Сумма: {order['grand_total']} {settings['currency_symbol']}",
+        f"Создан: {order['created_at']}",
+    ]
+    if order.get("items"):
+        lines.extend(["", "Товары:"])
+        for item in order["items"]:
+            lines.append(f"- {item['product_name']} x{item['quantity']} = {item['line_total']} {settings['currency_symbol']}")
+    return "\n".join(lines)
 
 
 def _require_admin(ctx: UserContext) -> None:
@@ -189,7 +298,9 @@ def create_api_router(*, config: Config, db: Database, bot: Bot) -> APIRouter:
     async def bootstrap(ctx: UserContext = Depends(current_user)) -> dict[str, Any]:
         raw_settings = db.get_settings()
         settings = _safe_store_settings(raw_settings, config)
+        shop_status = _shop_status()
         products = [_public_product(row) for row in db.list_products()]
+        promotions = db.list_promotions()
         favorite_ids = db.list_favorite_ids(ctx.tg_user_id)
         cart_items = db.list_cart_items(ctx.tg_user_id)
         cart = {
@@ -206,6 +317,8 @@ def create_api_router(*, config: Config, db: Database, bot: Bot) -> APIRouter:
                 "is_admin": ctx.is_admin,
             },
             "settings": settings,
+            "shop_status": shop_status,
+            "promotions": promotions,
             "products": products,
             "favorite_ids": favorite_ids,
             "cart": cart,
@@ -216,6 +329,7 @@ def create_api_router(*, config: Config, db: Database, bot: Bot) -> APIRouter:
     async def app_config(ctx: UserContext = Depends(current_user)) -> dict[str, Any]:
         raw_settings = db.get_settings()
         settings = _safe_store_settings(raw_settings, config)
+        shop_status = _shop_status()
         return {
             "user": {
                 "id": ctx.tg_user_id,
@@ -225,12 +339,17 @@ def create_api_router(*, config: Config, db: Database, bot: Bot) -> APIRouter:
                 "is_admin": ctx.is_admin,
             },
             "settings": settings,
+            "shop_status": shop_status,
         }
 
     @router.get("/products")
     async def products(_: UserContext = Depends(current_user)) -> dict[str, Any]:
         rows = db.list_products()
         return {"items": [_public_product(row) for row in rows]}
+
+    @router.get("/promotions")
+    async def promotions(_: UserContext = Depends(current_user)) -> dict[str, Any]:
+        return {"items": db.list_promotions()}
 
     @router.get("/products/{product_id}")
     async def product_details(product_id: int, _: UserContext = Depends(current_user)) -> dict[str, Any]:
@@ -282,6 +401,9 @@ def create_api_router(*, config: Config, db: Database, bot: Bot) -> APIRouter:
 
     @router.post("/orders")
     async def create_order(payload: OrderCreateIn, ctx: UserContext = Depends(current_user)) -> dict[str, Any]:
+        shop_status = _shop_status()
+        if not shop_status["is_open"]:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=shop_status["message"])
         if payload.payment_method.lower() not in {"cash", "наличные", "cash_only"}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only cash payment is supported.")
         try:
@@ -300,34 +422,19 @@ def create_api_router(*, config: Config, db: Database, bot: Bot) -> APIRouter:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
         settings = _safe_store_settings(db.get_settings(), config)
-        if config.has_order_destination:
-            order_text = _order_message(order, settings)
-            sent = False
-            for chat_id in _order_destination_ids(config.orders_group_id):
-                try:
-                    await bot.send_message(chat_id, order_text)
-                    sent = True
-                    if chat_id != config.orders_group_id:
-                        logger.warning(
-                            "Order #%s sent to fallback chat_id=%s. "
-                            "Update ORDERS_GROUP_ID to this value.",
-                            order["id"],
-                            chat_id,
-                        )
-                    break
-                except Exception:
-                    logger.warning(
-                        "Failed to send order #%s to chat_id=%s.",
-                        order["id"],
-                        chat_id,
-                        exc_info=True,
-                    )
-            if not sent:
-                logger.error(
-                    "Order #%s created, but notification was not delivered. ORDERS_GROUP_ID=%s",
-                    order["id"],
-                    config.orders_group_id,
-                )
+        order_text = _order_message(
+            order,
+            settings,
+            tg_user_id=ctx.tg_user_id,
+            tg_username=ctx.username,
+        )
+        await _notify_orders_group(
+            bot=bot,
+            config=config,
+            message_text=order_text,
+            event_name="Order",
+            event_id=int(order["id"]),
+        )
 
         return {"item": order}
 
@@ -364,11 +471,36 @@ def create_api_router(*, config: Config, db: Database, bot: Bot) -> APIRouter:
         return {"item": _public_product(updated)}
 
     @router.delete("/admin/products/{product_id}")
-    async def admin_disable_product(product_id: int, ctx: UserContext = Depends(current_user)) -> dict[str, Any]:
+    async def admin_delete_product(product_id: int, ctx: UserContext = Depends(current_user)) -> dict[str, Any]:
         _require_admin(ctx)
-        ok = db.disable_product(product_id)
+        ok = db.delete_product(product_id)
         if not ok:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found.")
+        return {"ok": True}
+
+    @router.get("/admin/promotions")
+    async def admin_promotions(ctx: UserContext = Depends(current_user)) -> dict[str, Any]:
+        _require_admin(ctx)
+        return {"items": db.list_promotions(include_inactive=True)}
+
+    @router.post("/admin/promotions")
+    async def admin_create_promotion(
+        payload: PromotionCreateIn,
+        ctx: UserContext = Depends(current_user),
+    ) -> dict[str, Any]:
+        _require_admin(ctx)
+        try:
+            created = db.create_promotion(payload.text)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return {"item": created}
+
+    @router.delete("/admin/promotions/{promotion_id}")
+    async def admin_delete_promotion(promotion_id: int, ctx: UserContext = Depends(current_user)) -> dict[str, Any]:
+        _require_admin(ctx)
+        ok = db.delete_promotion(promotion_id)
+        if not ok:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Promotion not found.")
         return {"ok": True}
 
     @router.get("/admin/settings")
@@ -407,5 +539,23 @@ def create_api_router(*, config: Config, db: Database, bot: Bot) -> APIRouter:
         if not updated:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
         return {"item": updated}
+
+    @router.delete("/admin/orders/{order_id}")
+    async def admin_delete_order(order_id: int, ctx: UserContext = Depends(current_user)) -> dict[str, Any]:
+        _require_admin(ctx)
+        deleted = db.delete_order(order_id)
+        if not deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+
+        settings = _safe_store_settings(db.get_settings(), config)
+        deletion_message = _deleted_order_message(order=deleted, settings=settings, admin=ctx)
+        await _notify_orders_group(
+            bot=bot,
+            config=config,
+            message_text=deletion_message,
+            event_name="Order deletion",
+            event_id=int(deleted["id"]),
+        )
+        return {"item": deleted, "ok": True}
 
     return router
