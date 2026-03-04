@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 KZ_TIMEZONE = ZoneInfo("Asia/Almaty")
 SHOP_OPEN_HOUR = 14
 SHOP_CLOSE_HOUR = 22
-DEFAULT_STORE_RULES = "Работа с 14:00 до 22:00\nВкусы,позвонят спросите"
+DEFAULT_STORE_RULES = "Работа с 14:00 до 22:00\nВкусы,позвонят спросите\nЗамены брака нету"
 
 
 @dataclass

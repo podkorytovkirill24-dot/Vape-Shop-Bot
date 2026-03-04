@@ -109,6 +109,16 @@ def build_router(config: Config, db: Database) -> Router:
             return
         await message.answer(text, reply_markup=ReplyKeyboardRemove())
 
+    @router.message(Command("id"))
+    async def cmd_id(message: Message) -> None:
+        if message.from_user is None:
+            return
+        is_admin = _is_admin(message.from_user.id)
+        await message.answer(
+            f"Ваш Telegram ID: {message.from_user.id}\n"
+            f"Админ: {'да' if is_admin else 'нет'}"
+        )
+
     @router.message(Command("broadcast"))
     async def cmd_broadcast(message: Message) -> None:
         sender = message.from_user
@@ -192,9 +202,22 @@ async def configure_bot_menu(bot: Bot, config: Config) -> None:
     )
 
 
+async def prepare_bot_for_polling(bot: Bot) -> None:
+    me = await bot.get_me()
+    await bot.delete_webhook(drop_pending_updates=False)
+    webhook = await bot.get_webhook_info()
+    logger.info(
+        "Polling bot @%s (%s). webhook_url=%s pending_updates=%s",
+        me.username or "unknown",
+        me.id,
+        webhook.url or "-",
+        webhook.pending_update_count,
+    )
+
+
 async def start_polling_task(bot: Bot, dp: Dispatcher) -> asyncio.Task:
     # If webhook was set earlier (for another host), polling will not receive updates.
-    await bot.delete_webhook(drop_pending_updates=False)
+    await prepare_bot_for_polling(bot)
     task = asyncio.create_task(
         dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types()),
         name="aiogram_polling_task",
