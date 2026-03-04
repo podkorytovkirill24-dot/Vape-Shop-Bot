@@ -47,11 +47,7 @@ def build_router(config: Config, db: Database) -> Router:
 
         sent_count = 0
         failed_count = 0
-        skipped_count = 0
         for user_id in user_ids:
-            if user_id == sender.id:
-                skipped_count += 1
-                continue
             try:
                 await origin_message.bot.send_message(user_id, broadcast_text)
                 sent_count += 1
@@ -63,8 +59,7 @@ def build_router(config: Config, db: Database) -> Router:
         await origin_message.answer(
             "Рассылка завершена.\n"
             f"Отправлено: {sent_count}\n"
-            f"Ошибок: {failed_count}\n"
-            f"Пропущено: {skipped_count}"
+            f"Ошибок: {failed_count}"
         )
 
     async def _broadcast_copy(origin_message: Message) -> None:
@@ -79,11 +74,7 @@ def build_router(config: Config, db: Database) -> Router:
 
         sent_count = 0
         failed_count = 0
-        skipped_count = 0
         for user_id in user_ids:
-            if user_id == sender.id:
-                skipped_count += 1
-                continue
             try:
                 await origin_message.copy_to(chat_id=user_id)
                 sent_count += 1
@@ -95,8 +86,7 @@ def build_router(config: Config, db: Database) -> Router:
         await origin_message.answer(
             "Рассылка завершена.\n"
             f"Отправлено: {sent_count}\n"
-            f"Ошибок: {failed_count}\n"
-            f"Пропущено: {skipped_count}"
+            f"Ошибок: {failed_count}"
         )
 
     @router.message(CommandStart())
@@ -203,6 +193,11 @@ async def configure_bot_menu(bot: Bot, config: Config) -> None:
 
 
 async def start_polling_task(bot: Bot, dp: Dispatcher) -> asyncio.Task:
-    task = asyncio.create_task(dp.start_polling(bot), name="aiogram_polling_task")
+    # If webhook was set earlier (for another host), polling will not receive updates.
+    await bot.delete_webhook(drop_pending_updates=False)
+    task = asyncio.create_task(
+        dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types()),
+        name="aiogram_polling_task",
+    )
     logger.info("Aiogram polling task started")
     return task

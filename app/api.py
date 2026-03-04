@@ -110,7 +110,7 @@ def _safe_store_settings(raw: dict[str, str], config: Config) -> dict[str, Any]:
         "delivery_fee": int(raw.get("delivery_fee", "1000") or "1000"),
         "delivery_note": raw.get(
             "delivery_note",
-            "зависит от количества заказов и может длиться не более 5 часов",
+            "Зависит от количества заказов и может длиться не более 5 часов",
         ),
         "support_contact": raw.get("support_contact", "@support"),
         "store_rules": raw.get("store_rules", DEFAULT_STORE_RULES),
@@ -154,25 +154,21 @@ def _order_message(
         lines.append(f"Квартира: {order['apartment']}")
     if order.get("comment"):
         lines.append(f"Комментарий: {order['comment']}")
-    lines.extend(
-        [
-            "",
-            "Товары:",
-        ]
-    )
+    lines.extend([
+        "",
+        "Товары:",
+    ])
     for item in order["items"]:
         lines.append(
             f"- {item['product_name']} x{item['quantity']} = {item['line_total']} {settings['currency_symbol']}"
         )
-    lines.extend(
-        [
-            "",
-            f"Товары: {order['items_total']} {settings['currency_symbol']}",
-            f"Доставка: {order['delivery_fee']} {settings['currency_symbol']}",
-            f"Итого: {order['grand_total']} {settings['currency_symbol']}",
-            f"Оплата: {order['payment_method']}",
-        ]
-    )
+    lines.extend([
+        "",
+        f"Товары: {order['items_total']} {settings['currency_symbol']}",
+        f"Доставка: {order['delivery_fee']} {settings['currency_symbol']}",
+        f"Итого: {order['grand_total']} {settings['currency_symbol']}",
+        f"Оплата: {order['payment_method']}",
+    ])
     return "\n".join(lines)
 
 
