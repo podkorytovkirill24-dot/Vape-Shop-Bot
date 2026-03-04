@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import create_api_router
-from app.bot import build_dispatcher, configure_bot_menu, start_polling_task
+from app.bot import build_dispatcher, configure_bot_menu, prepare_bot_for_polling, start_polling_task
 from app.config import get_config
 from app.db import Database
 
@@ -104,7 +104,7 @@ async def run_bot_only() -> None:
         logger.exception("Could not configure bot menu button.")
 
     try:
-        await bot.delete_webhook(drop_pending_updates=False)
+        await prepare_bot_for_polling(bot)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         with suppress(Exception):
