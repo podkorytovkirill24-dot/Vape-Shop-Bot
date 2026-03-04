@@ -39,12 +39,19 @@ db = Database(
     defaults={
         "store_name": config.mini_app_title,
         "store_logo_url": config.mini_app_logo_url,
-        "currency_symbol": "₸",
-        "city_name": "Усть-Каменогорск",
+        "currency_symbol": "\u20b8",
+        "city_name": "\u0423\u0441\u0442\u044c-\u041a\u0430\u043c\u0435\u043d\u043e\u0433\u043e\u0440\u0441\u043a",
         "delivery_fee": "1000",
-        "delivery_note": "зависит от количества заказов и может длиться не более 5 часов",
+        "delivery_note": (
+            "\u0417\u0430\u0432\u0438\u0441\u0438\u0442 \u043e\u0442 \u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u0430 "
+            "\u0437\u0430\u043a\u0430\u0437\u043e\u0432 \u0438 \u043c\u043e\u0436\u0435\u0442 \u0434\u043b\u0438\u0442\u044c\u0441\u044f "
+            "\u043d\u0435 \u0431\u043e\u043b\u0435\u0435 5 \u0447\u0430\u0441\u043e\u0432"
+        ),
         "support_contact": "@support",
-        "store_rules": "Работа с 14:00 до 22:00\nВкусы,позвонят спросите",
+        "store_rules": (
+            "\u0420\u0430\u0431\u043e\u0442\u0430 \u0441 14:00 \u0434\u043e 22:00\\n"
+            "\u0412\u043a\u0443\u0441\u044b,\u043f\u043e\u0437\u0432\u043e\u043d\u044f\u0442 \u0441\u043f\u0440\u043e\u0441\u0438\u0442\u0435"
+        ),
     },
 )
 bot = Bot(token=config.bot_token)
@@ -96,7 +103,8 @@ async def run_bot_only() -> None:
         logger.exception("Could not configure bot menu button.")
 
     try:
-        await dp.start_polling(bot)
+        await bot.delete_webhook(drop_pending_updates=False)
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         with suppress(Exception):
             await dp.stop_polling()
