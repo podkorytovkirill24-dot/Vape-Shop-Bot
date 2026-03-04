@@ -44,6 +44,7 @@ db = Database(
         "delivery_fee": "1000",
         "delivery_note": "зависит от количества заказов и может длиться не более 5 часов",
         "support_contact": "@support",
+        "store_rules": "Работа с 14:00 до 22:00\nВкусы,позвонят спросите",
     },
 )
 bot = Bot(token=config.bot_token)
